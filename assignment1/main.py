@@ -7,7 +7,8 @@ def solve_cloze(input, candidates, corpus, left_only):
     solver = ClozeSolver(input_filename=input,
                          candidates_filename=candidates,
                          corpus_filename=corpus,
-                         left_only=left_only)
+                         left_only=left_only,
+                         max_ngram_order=5)
     solver.train()
     solution =  solver.solve_cloze()
     accuracy = solver.calculate_solution_accuracy(solution)

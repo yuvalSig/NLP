@@ -5,22 +5,26 @@ import pickle
 from collections import Counter
 import random
 
+
+#TODO: add docstrings
+#TODO: Move this class to main.py file as not allowed to submit multiple files
 class ClozeSolver:
     def __init__(self,
                  input_filename: str,
                  candidates_filename: str,
                  corpus_filename: str,
-                 left_only: bool):
+                 left_only: bool,
+                 max_ngram_order: int):
 
         self.input_filename = input_filename
-        self.left_only = left_only
         self.candidates_filename = candidates_filename
         self.corpus_filename = corpus_filename
+        self.left_only = left_only
+        self.max_ngram_order = max_ngram_order
         self.candidates_words = self._get_candidates_words()
-        self.word_before, self.word_after, self.word_before2, self.word_after2 = self._get_target_words()
-        # Build n-gram models
-        self.bigrams = Counter()
-        self.trigrams = Counter()
+        self.context_words = self._get_target_words()
+        # Build n-gram models - dynamically create counters for each order
+        self.ngrams = {n: Counter() for n in range(2, max_ngram_order + 1)}
         self.unigrams = Counter()
 
     def train(self):
@@ -33,10 +37,13 @@ class ClozeSolver:
             return candidates_file.read().splitlines()
 
     def _get_target_words(self):
-        word_before = []  # Immediate word before blank (for bigram: word_before → candidate)
-        word_after = []  # Immediate word after blank (for bigram: candidate → word_after)
-        word_before2 = []  # Second word before blank (for trigram: word_before2 → word_before → candidate)
-        word_after2 = []  # Second word after blank (for trigram: candidate → word_after → word_after2)
+        """Extract context words around each blank. Returns dict with lists for each position."""
+        context = {}
+
+        # For n-grams up to max_ngram_order, we need (max_ngram_order-1) words before/after
+        for i in range(self.max_ngram_order - 1):
+            context[f'before{i}'] = []
+            context[f'after{i}'] = []
 
         with open(self.input_filename, 'r', encoding='utf-8') as fin:
             text = fin.read()
@@ -56,94 +63,93 @@ class ClozeSolver:
 
             # Get words before blank
             words_before_text = text_before.split()
-            if len(words_before_text) >= 1:
-                word_before.append(words_before_text[-1].lower())
-            else:
-                word_before.append(None)
-            if len(words_before_text) >= 2:
-                word_before2.append(words_before_text[-2].lower())
-            else:
-                word_before2.append(None)
+            for i in range(self.max_ngram_order - 1):
+                idx = len(words_before_text) - 1 - i
+                if idx >= 0:
+                    context[f'before{i}'].append(words_before_text[idx].lower())
+                else:
+                    context[f'before{i}'].append(None)
 
             # Get words after blank
             words_after_text = text_after.split()
-            if len(words_after_text) >= 1:
-                word_after.append(words_after_text[0].lower())
-            else:
-                word_after.append(None)
-            if len(words_after_text) >= 2:
-                word_after2.append(words_after_text[1].lower())
-            else:
-                word_after2.append(None)
+            for i in range(self.max_ngram_order - 1):
+                if i < len(words_after_text):
+                    context[f'after{i}'].append(words_after_text[i].lower())
+                else:
+                    context[f'after{i}'].append(None)
 
-        return word_before, word_after, word_before2, word_after2
+        return context
 
     def _load_ngram_counts(self):
-        if not os.path.isfile('unigrams.pkl') or not os.path.isfile('bigrams.pkl') or not os.path.isfile('trigrams.pkl'):
+        pickle_files = {n: f'{n}grams.pkl' for n in range(2, self.max_ngram_order + 1)}
+        pickle_files['unigrams'] = 'unigrams.pkl'
+
+        all_exist = all(os.path.isfile(f) for f in pickle_files.values())
+
+        if not all_exist:
             self._init_ngram_counts()
             print("\nsaving unigrams to file ...")
             pickle.dump(self.unigrams, open('unigrams.pkl', 'wb'))
             print("finished saving unigrams to file ...")
-            print("\nsaving bigrams to file ...")
-            pickle.dump(self.bigrams, open('bigrams.pkl', 'wb'))
-            print("finished saving bigrams to file ...")
-            print("\nsaving trigrams to file ...")
-            pickle.dump(self.trigrams, open('trigrams.pkl', 'wb'))
-            print("finished saving trigrams to file ...")
+            for n in range(2, self.max_ngram_order + 1):
+                print(f"\nsaving {n}grams to file ...")
+                pickle.dump(self.ngrams[n], open(f'{n}grams.pkl', 'wb'))
+                print(f"finished saving {n}grams to file ...")
         else:
             print("\nloading unigrams pkl ...")
             self.unigrams = pickle.load(open('unigrams.pkl', 'rb'))
             print("loaded unigrams pkl ...")
-            print("\nloading bigrams pkl ...")
-            self.bigrams = pickle.load(open('bigrams.pkl', 'rb'))
-            print("loaded bigrams pkl ...")
-            print("\nloading trigrams pkl ...")
-            self.trigrams = pickle.load(open('trigrams.pkl', 'rb'))
-            print("loaded trigrams pkl ...")
+            for n in range(2, self.max_ngram_order + 1):
+                print(f"\nloading {n}grams pkl ...")
+                self.ngrams[n] = pickle.load(open(f'{n}grams.pkl', 'rb'))
+                print(f"loaded {n}grams pkl ...")
 
     def _init_ngram_counts(self) -> None:
-        word_before_set = set([w for w in self.word_before if w is not None])
-        word_after_set = set([w for w in self.word_after if w is not None])
-        word_before2_set = set([w for w in self.word_before2 if w is not None])
-        word_after2_set = set([w for w in self.word_after2 if w is not None])
+        # Build sets for fast lookup
+        context_sets = {}
+        for key, word_list in self.context_words.items():
+            context_sets[key] = set([w for w in word_list if w is not None])
         candidates_words_set = set([w.lower() for w in self.candidates_words])
 
         with open(self.corpus_filename, 'r', encoding='utf-8') as fin:
-            print('creating bigram and trigram from corpus ...')
+            print(f'creating n-grams (up to {self.max_ngram_order}) from corpus ...')
             for i, line in enumerate(fin):
                 words = self._tokenize(line)
                 # Count unigrams
                 self.unigrams.update(words)
 
-                if len(words) < 2:
-                    continue
+                # Count n-grams for each order
+                for n in range(2, self.max_ngram_order + 1):
+                    if len(words) < n:
+                        continue
 
-                # Count bigrams once
-                pair_counts = Counter(zip(words, words[1:]))
+                    # Count n-grams once using Counter
+                    ngram_counts = Counter(zip(*[words[j:] for j in range(n)]))
 
-                # Loop only over bigrams that actually appear
-                for (w1, w2), count in pair_counts.items():
-                    # Pattern 1: word_before → candidate
-                    if w1 in word_before_set and w2 in candidates_words_set:
-                        self.bigrams[(w1, w2)] += count
-                    # Pattern 2: candidate → word_after
-                    elif not self.left_only and w1 in candidates_words_set and w2 in word_after_set:
-                        self.bigrams[(w1, w2)] += count
+                    # Loop only over n-grams that actually appear
+                    for ngram_tuple, count in ngram_counts.items():
+                        # Pattern 1: context_before → ... → candidate
+                        # Check if first (n-1) words match context_before patterns and last word is candidate
+                        matches_pattern1 = True
+                        for j in range(n - 1):
+                            context_key = f'before{j}'
+                            if ngram_tuple[j] not in context_sets.get(context_key, set()):
+                                matches_pattern1 = False
+                                break
+                        if matches_pattern1 and ngram_tuple[-1] in candidates_words_set:
+                            self.ngrams[n][ngram_tuple] += count
 
-                # Count trigrams once
-                if len(words) < 3:
-                    continue
-
-                triple_counts = Counter(zip(words, words[1:], words[2:]))
-
-                # Loop only over trigrams that actually appear
-                for (w1, w2, w3), count in triple_counts.items():
-                    # Pattern 1: word_before2 → word_before → candidate
-                    if w1 in word_before2_set and w2 in word_before_set and w3 in candidates_words_set:
-                        self.trigrams[(w1, w2, w3)] += count
-                    # Pattern 2: candidate → word_after → word_after2
-                    elif not self.left_only and w1 in candidates_words_set and w2 in word_after_set and w3 in word_after2_set:
-                        self.trigrams[(w1, w2, w3)] += count
+                        # Pattern 2: candidate → context_after → ... (only if not left_only)
+                        elif not self.left_only:
+                            matches_pattern2 = ngram_tuple[0] in candidates_words_set
+                            if matches_pattern2:
+                                for j in range(1, n):
+                                    context_key = f'after{j - 1}'
+                                    if ngram_tuple[j] not in context_sets.get(context_key, set()):
+                                        matches_pattern2 = False
+                                        break
+                                if matches_pattern2:
+                                    self.ngrams[n][ngram_tuple] += count
 
                 if i % 100000 == 0:
                     print(f"Finished {i} lines...")
@@ -157,100 +163,80 @@ class ClozeSolver:
 
     def _get_context(self, text: str, blank_pos: int) -> Tuple[List[str], List[str]]:
         """Extract left and right context around a blank position."""
-        # Find the position of the blank in tokenized words
-        # We need to count words before the blank
         text_before_blank = text[:blank_pos]
         words_before = self._tokenize(text_before_blank)
 
-        # Get left context (last 2 words for trigram, last 1 for bigram)
-        left_context = words_before[-2:] if len(words_before) >= 2 else words_before
+        # Get left context (up to max_ngram_order-1 words)
+        left_context = words_before[-(self.max_ngram_order - 1):] if len(words_before) >= (
+                    self.max_ngram_order - 1) else words_before
 
         # Get right context if not left_only
         right_context = []
         if not self.left_only:
             text_after_blank = text[blank_pos:]
-            # Remove the blank marker and get next words
             text_after_blank = text_after_blank.replace('__________', '', 1)
             words_after = self._tokenize(text_after_blank)
-            right_context = words_after[:2] if len(words_after) >= 2 else words_after
+            right_context = words_after[:self.max_ngram_order - 1] if len(words_after) >= (
+                        self.max_ngram_order - 1) else words_after
 
         return left_context, right_context
 
-    def _score_candidate_bigram(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
-        """Score a candidate word using bigram model."""
+    def _score_candidate_ngram(self, candidate: str, left_context: List[str], right_context: List[str],
+                               n: int) -> float:
+        """Score a candidate word using n-gram model of order n."""
         candidate_lower = candidate.lower()
         score = 0.0
 
-        # Left bigram: (prev_word, candidate)
-        if len(left_context) >= 1:
-            prev_word = left_context[-1]
-            bigram = (prev_word, candidate_lower)
-            bigram_count = self.bigrams[bigram]
-            unigram_count = self.unigrams[prev_word]
-            if unigram_count > 0:
-                score += bigram_count / unigram_count
+        # Left n-gram: (context_words..., candidate)
+        if len(left_context) >= n - 1:
+            ngram_tuple = tuple(left_context[-(n - 1):] + [candidate_lower])
+            ngram_count = self.ngrams[n][ngram_tuple]
 
-        # Right bigram: (candidate, next_word) - only if not left_only
-        if not self.left_only and len(right_context) >= 1:
-            next_word = right_context[0]
-            bigram = (candidate_lower, next_word)
-            bigram_count = self.bigrams[bigram]
-            unigram_count = self.unigrams[candidate_lower]
-            if unigram_count > 0:
-                score += bigram_count / unigram_count
+            # Get (n-1)-gram count for normalization
+            if n > 2:
+                prev_ngram = tuple(left_context[-(n - 1):])
+                prev_count = self.ngrams[n - 1][prev_ngram]
+            else:
+                # For bigrams, use unigram count
+                prev_count = self.unigrams[left_context[-1]] if left_context else 0
 
-        return score
+            if prev_count > 0:
+                score += ngram_count / prev_count
+        # Fallback to lower-order n-gram
+        elif len(left_context) >= 1 and n > 2:
+            return self._score_candidate_ngram(candidate, left_context, right_context, n - 1)
 
-    def _score_candidate_trigram(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
-        """Score a candidate word using trigram model."""
-        candidate_lower = candidate.lower()
-        score = 0.0
+        # Right n-gram: (candidate, context_words...) - only if not left_only
+        if not self.left_only and len(right_context) >= n - 1:
+            ngram_tuple = tuple([candidate_lower] + right_context[:n - 1])
+            ngram_count = self.ngrams[n][ngram_tuple]
 
-        # Left trigram: (word1, word2, candidate)
-        if len(left_context) >= 2:
-            word1, word2 = left_context[-2], left_context[-1]
-            trigram = (word1, word2, candidate_lower)
-            trigram_count = self.trigrams[trigram]
-            bigram_count = self.bigrams[(word1, word2)]
-            if bigram_count > 0:
-                score += trigram_count / bigram_count
+            # Get (n-1)-gram count for normalization
+            if n > 2:
+                prev_ngram = tuple([candidate_lower] + right_context[:n - 2])
+                prev_count = self.ngrams[n - 1][prev_ngram]
+            else:
+                # For bigrams, use unigram count
+                prev_count = self.unigrams[candidate_lower]
 
-        # Left bigram fallback: (word2, candidate)
-        elif len(left_context) >= 1:
-            word2 = left_context[-1]
-            bigram = (word2, candidate_lower)
-            bigram_count = self.bigrams[bigram]
-            unigram_count = self.unigrams[word2]
-            if unigram_count > 0:
-                score += bigram_count / unigram_count
-
-        # Right trigram: (candidate, next_word1, next_word2) - only if not left_only
-        if not self.left_only and len(right_context) >= 2:
-            next_word1, next_word2 = right_context[0], right_context[1]
-            trigram = (candidate_lower, next_word1, next_word2)
-            trigram_count = self.trigrams[trigram]
-            bigram_count = self.bigrams[(candidate_lower, next_word1)]
-            if bigram_count > 0:
-                score += trigram_count / bigram_count
-
-        # Right bigram fallback: (candidate, next_word1) - only if not left_only
-        elif not self.left_only and len(right_context) >= 1:
-            next_word1 = right_context[0]
-            bigram = (candidate_lower, next_word1)
-            bigram_count = self.bigrams[bigram]
-            unigram_count = self.unigrams[candidate_lower]
-            if unigram_count > 0:
-                score += bigram_count / unigram_count
+            if prev_count > 0:
+                score += ngram_count / prev_count
+        # Fallback to lower-order n-gram
+        elif not self.left_only and len(right_context) >= 1 and n > 2:
+            score += self._score_candidate_ngram(candidate, left_context, right_context, n - 1)
 
         return score
 
     def _score_candidate(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
-        """Score a candidate using both bigram and trigram models."""
-        trigram_score = self._score_candidate_trigram(candidate, left_context, right_context)
-        bigram_score = self._score_candidate_bigram(candidate, left_context, right_context)
+        """Score a candidate using all n-gram models, with higher weights for higher-order n-grams."""
+        combined_score = 0.0
 
-        # Combine scores (trigram gets higher weight as it's more specific)
-        combined_score = 2.0 * trigram_score + bigram_score
+        # Score with each n-gram order, with increasing weights
+        for n in range(2, self.max_ngram_order + 1):
+            ngram_score = self._score_candidate_ngram(candidate, left_context, right_context, n)
+            # Higher-order n-grams get exponentially higher weights
+            weight = (n - 1) ** 2  # 1, 4, 9, 16 for bigrams, trigrams, 4-grams, 5-grams
+            combined_score += weight * ngram_score
 
         return combined_score
 
