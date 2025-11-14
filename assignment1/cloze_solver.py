@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Set, Dict
 import re
 import os
 import pickle
@@ -27,17 +27,24 @@ class ClozeSolver:
         self.ngrams = {n: Counter() for n in range(2, max_ngram_order + 1)}
         self.unigrams = Counter()
 
-    def train(self):
-        # TODO: delete _load_ngram_counts function and use only _init_ngram_counts as cant submit the pickle files
-        self._load_ngram_counts()
-        # self._init_ngram_counts()
-
     def _get_candidates_words(self) -> List[str]:
         with open(self.candidates_filename, 'r', encoding='utf-8') as candidates_file:
             return candidates_file.read().splitlines()
 
-    def _get_target_words(self):
-        """Extract context words around each blank. Returns dict with lists for each position."""
+    def _get_target_words(self) -> Dict[str, List[str]]:
+        """
+        Extract context words around each blank. Returns dict with lists for each position.
+        
+        Returns:
+            dict: A dictionary with keys like 'before0', 'before1', 'after0', 'after1', etc.
+                  Each key maps to a list where each element corresponds to a blank position.
+                  - 'before0' contains the immediate word before each blank
+                  - 'before1' contains the second word before each blank
+                  - 'after0' contains the immediate word after each blank
+                  - 'after1' contains the second word after each blank
+                  - etc. for higher-order n-grams
+                  - if there is no word available at a position (e.g., blank at start/end of text), None is appended to maintain consistent list lengths.
+        """
         context = {}
 
         # For n-grams up to max_ngram_order, we need (max_ngram_order-1) words before/after
@@ -68,6 +75,8 @@ class ClozeSolver:
                 if idx >= 0:
                     context[f'before{i}'].append(words_before_text[idx].lower())
                 else:
+                    # No word available at this position (e.g., blank at start of sentence)
+                    # These None values are filtered out during n-gram counting.
                     context[f'before{i}'].append(None)
 
             # Get words after blank
@@ -76,90 +85,76 @@ class ClozeSolver:
                 if i < len(words_after_text):
                     context[f'after{i}'].append(words_after_text[i].lower())
                 else:
+                    # No word available at this position (e.g., blank at end of sentence)
+                    # These None values are filtered out during n-gram counting.
                     context[f'after{i}'].append(None)
 
         return context
 
-    def _load_ngram_counts(self):
-        pickle_files = {n: f'{n}grams.pkl' for n in range(2, self.max_ngram_order + 1)}
-        pickle_files['unigrams'] = 'unigrams.pkl'
+    def train(self):
+        # TODO: delete _load_ngram_counts function and use only _init_ngram_counts as cant submit the pickle files
+        self._load_ngram_counts()
+        # self._init_ngram_counts()
 
-        all_exist = all(os.path.isfile(f) for f in pickle_files.values())
+    def solve_cloze(self) -> List[str]:
+        """Solve the cloze by finding the best candidate for each blank."""
+        with open(self.input_filename, 'r', encoding='utf-8') as input_file:
+            text = input_file.read()
 
-        if not all_exist:
-            self._init_ngram_counts()
-            print("\nsaving unigrams to file ...")
-            pickle.dump(self.unigrams, open('unigrams.pkl', 'wb'))
-            print("finished saving unigrams to file ...")
-            for n in range(2, self.max_ngram_order + 1):
-                print(f"\nsaving {n}grams to file ...")
-                pickle.dump(self.ngrams[n], open(f'{n}grams.pkl', 'wb'))
-                print(f"finished saving {n}grams to file ...")
-        else:
-            print("\nloading unigrams pkl ...")
-            self.unigrams = pickle.load(open('unigrams.pkl', 'rb'))
-            print("loaded unigrams pkl ...")
-            for n in range(2, self.max_ngram_order + 1):
-                print(f"\nloading {n}grams pkl ...")
-                self.ngrams[n] = pickle.load(open(f'{n}grams.pkl', 'rb'))
-                print(f"loaded {n}grams pkl ...")
+        blank_positions = self._find_blank_positions(text)
+        solution = []
 
-    def _init_ngram_counts(self) -> None:
-        # Build sets for fast lookup
-        context_sets = {}
-        for key, word_list in self.context_words.items():
-            context_sets[key] = set([w for w in word_list if w is not None])
-        candidates_words_set = set([w.lower() for w in self.candidates_words])
+        for blank_pos in blank_positions:
+            best_candidate, best_score = self._find_best_candidate_for_blank(text, blank_pos)
+            solution.append(best_candidate)
+            print(f'Blank at position {blank_pos}: selected "{best_candidate}" (score: {best_score:.6f})')
 
-        with open(self.corpus_filename, 'r', encoding='utf-8') as fin:
-            print(f'creating n-grams (up to {self.max_ngram_order}) from corpus ...')
-            for i, line in enumerate(fin):
-                words = self._tokenize(line)
-                # Count unigrams
-                self.unigrams.update(words)
+        return solution
 
-                # Count n-grams for each order
-                for n in range(2, self.max_ngram_order + 1):
-                    if len(words) < n:
-                        continue
+    def _find_blank_positions(self, text: str) -> List[int]:
+        """
+        Find all blank positions in the text.
 
-                    # Count n-grams once using Counter
-                    ngram_counts = Counter(zip(*[words[j:] for j in range(n)]))
+        Args:
+            text: The input text containing blanks
 
-                    # Loop only over n-grams that actually appear
-                    for ngram_tuple, count in ngram_counts.items():
-                        # Pattern 1: context_before → ... → candidate
-                        # Check if first (n-1) words match context_before patterns and last word is candidate
-                        matches_pattern1 = True
-                        for j in range(n - 1):
-                            context_key = f'before{j}'
-                            if ngram_tuple[j] not in context_sets.get(context_key, set()):
-                                matches_pattern1 = False
-                                break
-                        if matches_pattern1 and ngram_tuple[-1] in candidates_words_set:
-                            self.ngrams[n][ngram_tuple] += count
+        Returns:
+            List of blank start positions
+        """
+        blank_pattern = re.compile(r'_{10,}')
+        blanks = []
+        for match in blank_pattern.finditer(text):
+            blanks.append(match.start())
+        return blanks
 
-                        # Pattern 2: candidate → context_after → ... (only if not left_only)
-                        elif not self.left_only:
-                            matches_pattern2 = ngram_tuple[0] in candidates_words_set
-                            if matches_pattern2:
-                                for j in range(1, n):
-                                    context_key = f'after{j - 1}'
-                                    if ngram_tuple[j] not in context_sets.get(context_key, set()):
-                                        matches_pattern2 = False
-                                        break
-                                if matches_pattern2:
-                                    self.ngrams[n][ngram_tuple] += count
+    def _find_best_candidate_for_blank(self, text: str, blank_pos: int) -> Tuple[str, float]:
+        """
+        Find the best candidate word for a single blank position.
 
-                if i % 100000 == 0:
-                    print(f"Finished {i} lines...")
+        Args:
+            text: The input text containing blanks
+            blank_pos: The start position of the blank
 
-    def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text into words, handling punctuation."""
-        # Regular expression to remove punctuation
-        punctuation_re = re.compile(r'[^\w\s-]')
-        clean_text = punctuation_re.sub('', text).lower()
-        return clean_text.split()
+        Returns:
+            Tuple of (best_candidate_word, best_score)
+        """
+        left_context, right_context = self._get_context(text, blank_pos)
+
+        best_candidate = None
+        best_score = float('-inf')
+
+        # Score each candidate
+        for candidate in self.candidates_words:
+            score = self._score_candidate(candidate, left_context, right_context)
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+
+        # If no good match found, use first candidate as fallback
+        if best_candidate is None:
+            best_candidate = self.candidates_words[0] if self.candidates_words else ""
+
+        return best_candidate, best_score
 
     def _get_context(self, text: str, blank_pos: int) -> Tuple[List[str], List[str]]:
         """Extract left and right context around a blank position."""
@@ -181,7 +176,23 @@ class ClozeSolver:
 
         return left_context, right_context
 
-    def _score_candidate_ngram(self, candidate: str, left_context: List[str], right_context: List[str],
+    def _score_candidate(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
+        """Score a candidate using all n-gram models, with higher weights for higher-order n-grams."""
+        combined_score = 0.0
+
+        # Score with each n-gram order, with increasing weights
+        for n in range(2, self.max_ngram_order + 1):
+            ngram_score = self._score_candidate_ngram(candidate, left_context, right_context, n)
+            # Higher-order n-grams get exponentially higher weights
+            weight = (n - 1) ** 2  # 1, 4, 9, 16 for bigrams, trigrams, 4-grams, 5-grams
+            combined_score += weight * ngram_score
+
+        return combined_score
+
+    def _score_candidate_ngram(self,
+                               candidate: str,
+                               left_context: List[str],
+                               right_context: List[str],
                                n: int) -> float:
         """Score a candidate word using n-gram model of order n."""
         candidate_lower = candidate.lower()
@@ -227,56 +238,124 @@ class ClozeSolver:
 
         return score
 
-    def _score_candidate(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
-        """Score a candidate using all n-gram models, with higher weights for higher-order n-grams."""
-        combined_score = 0.0
+    def _load_ngram_counts(self):
+        pickle_files = {n: f'{n}grams.pkl' for n in range(2, self.max_ngram_order + 1)}
+        pickle_files['unigrams'] = 'unigrams.pkl'
 
-        # Score with each n-gram order, with increasing weights
-        for n in range(2, self.max_ngram_order + 1):
-            ngram_score = self._score_candidate_ngram(candidate, left_context, right_context, n)
-            # Higher-order n-grams get exponentially higher weights
-            weight = (n - 1) ** 2  # 1, 4, 9, 16 for bigrams, trigrams, 4-grams, 5-grams
-            combined_score += weight * ngram_score
+        all_exist = all(os.path.isfile(f) for f in pickle_files.values())
 
-        return combined_score
+        if not all_exist:
+            self._init_ngram_counts()
+            print("\nsaving unigrams to file ...")
+            pickle.dump(self.unigrams, open('unigrams.pkl', 'wb'))
+            print("finished saving unigrams to file ...")
+            for n in range(2, self.max_ngram_order + 1):
+                print(f"\nsaving {n}grams to file ...")
+                pickle.dump(self.ngrams[n], open(f'{n}grams.pkl', 'wb'))
+                print(f"finished saving {n}grams to file ...")
+        else:
+            print("\nloading unigrams pkl ...")
+            self.unigrams = pickle.load(open('unigrams.pkl', 'rb'))
+            print("loaded unigrams pkl ...")
+            for n in range(2, self.max_ngram_order + 1):
+                print(f"\nloading {n}grams pkl ...")
+                self.ngrams[n] = pickle.load(open(f'{n}grams.pkl', 'rb'))
+                print(f"loaded {n}grams pkl ...")
 
-    def solve_cloze(self) -> List[str]:
-        """Solve the cloze by finding the best candidate for each blank."""
-        with open(self.input_filename, 'r', encoding='utf-8') as input_file:
-            text = input_file.read()
+    # TODO: make the _init_ngram_counts function async to speed up the training process
+    def _init_ngram_counts(self) -> None:
+        """Initialize n-gram counts from corpus, only counting relevant n-grams."""
+        # Build sets for fast lookup
+        self.context_sets: Dict[str, Set[str]] = {}
+        for key, word_list in self.context_words.items():
+            # Filter out None values which indicate missing context words
+            self.context_sets[key] = set([w for w in word_list if w is not None])
+        self.candidates_words_set = set([w.lower() for w in self.candidates_words])
 
-        # Find all blank positions
-        blank_pattern = re.compile(r'_{10,}')
-        blanks = []
-        for match in blank_pattern.finditer(text):
-            blanks.append(match.start())
+        with open(self.corpus_filename, 'r', encoding='utf-8') as fin:
+            print(f'creating n-grams (up to {self.max_ngram_order}) from corpus ...')
+            for i, line in enumerate(fin):
+                words = self._tokenize(line)
+                # Count unigrams
+                self.unigrams.update(words)
 
-        solution = []
+                # Count n-grams for each order
+                for n in range(2, self.max_ngram_order + 1):
+                    self._update_ngrams(words, n)
 
-        for blank_pos in blanks:
-            left_context, right_context = self._get_context(text, blank_pos)
+                if i % 100000 == 0:
+                    print(f"Finished {i} lines...")
 
-            best_candidate = None
-            best_score = float('-inf')
+    def _tokenize(self, text: str) -> List[str]:
+        """Tokenize text into words, handling punctuation."""
+        # Regular expression to remove punctuation
+        punctuation_re = re.compile(r'[^\w\s-]')
+        clean_text = punctuation_re.sub('', text).lower()
+        return clean_text.split()
 
-            # Score each candidate
-            for candidate in self.candidates_words:
-                score = self._score_candidate(candidate, left_context, right_context)
-                if score > best_score:
-                    best_score = score
-                    best_candidate = candidate
+    def _update_ngrams(self, words: List[str], n: int) -> None:
+        """
+        Process and count n-grams of order n for a line of text.
+        Only counts n-grams that match the relevant patterns (before→candidate or candidate→after).
 
-            # If no good match found, use first candidate as fallback
-            if best_candidate is None:
-                best_candidate = self.candidates_words[0] if self.candidates_words else ""
+        Args:
+            words: Tokenized words from a line
+            n: The order of n-grams to process
+        """
+        if len(words) < n:
+            return
 
-            solution.append(best_candidate)
-            print(f'Blank at position {blank_pos}: selected "{best_candidate}" (score: {best_score:.6f})')
+        # Count n-grams once using Counter
+        ngram_counts = Counter(zip(*[words[j:] for j in range(n)]))
 
-        return solution
+        # Loop only over n-grams that actually appear
+        for ngram_tuple, count in ngram_counts.items():
+            # Pattern 1: context_before → ... → candidate
+            if self._matches_before_pattern(ngram_tuple, n):
+                self.ngrams[n][ngram_tuple] += count
 
-    def solve_cloze_randomly(self) -> List[str]:
-        return random.choices(self.candidates_words, k=len(self.candidates_words))
+            # Pattern 2: candidate → context_after → ... (only if not left_only)
+            elif not self.left_only and self._matches_after_pattern(ngram_tuple, n):
+                self.ngrams[n][ngram_tuple] += count
+
+    def _matches_before_pattern(self, ngram_tuple: tuple, n: int) -> bool:
+        """
+        Check if an n-gram matches pattern 1: context_before → ... → candidate.
+
+        Args:
+            ngram_tuple: The n-gram tuple to check
+            n: The order of the n-gram
+
+        Returns:
+            bool: True if the n-gram matches the before pattern
+        """
+        # Check if first (n-1) words match context_before patterns and last word is candidate
+        for j in range(n - 1):
+            context_key = f'before{j}'
+            if ngram_tuple[j] not in self.context_sets.get(context_key, set()):
+                return False
+        return ngram_tuple[-1] in self.candidates_words_set
+
+    def _matches_after_pattern(self, ngram_tuple: tuple, n: int) -> bool:
+        """
+        Check if an n-gram matches pattern 2: candidate → context_after → ...
+
+        Args:
+            ngram_tuple: The n-gram tuple to check
+            n: The order of the n-gram
+
+        Returns:
+            bool: True if the n-gram matches the after pattern
+        """
+        # Check if first word is candidate and remaining words match context_after patterns
+        if ngram_tuple[0] not in self.candidates_words_set:
+            return False
+
+        for j in range(1, n):
+            context_key = f'after{j - 1}'
+            if ngram_tuple[j] not in self.context_sets.get(context_key, set()):
+                return False
+        return True
 
     def get_random_word_selection_accuracy(self, num_of_random_solutions: int = 1000) -> float:
         """
@@ -297,7 +376,10 @@ class ClozeSolver:
 
         return sum(accuracies) / len(accuracies)
 
+    def solve_cloze_randomly(self) -> List[str]:
+        return random.choices(self.candidates_words, k=len(self.candidates_words))
+
     def calculate_solution_accuracy(self, solution: List[str]):
-        correct_order = self._get_candidates_words()
+        correct_order = self.candidates_words # The correct order is the order in candidates file
         matches = sum(1 for prediction, correct in zip(solution, correct_order) if prediction == correct)
         return (matches / len(correct_order)) * 100
