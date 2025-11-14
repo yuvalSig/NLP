@@ -32,7 +32,19 @@ class ClozeSolver:
             return candidates_file.read().splitlines()
 
     def _get_target_words(self):
-        """Extract context words around each blank. Returns dict with lists for each position."""
+        """
+        Extract context words around each blank. Returns dict with lists for each position.
+        
+        Returns:
+            dict: A dictionary with keys like 'before0', 'before1', 'after0', 'after1', etc.
+                  Each key maps to a list where each element corresponds to a blank position.
+                  - 'before0' contains the immediate word before each blank
+                  - 'before1' contains the second word before each blank
+                  - 'after0' contains the immediate word after each blank
+                  - 'after1' contains the second word after each blank
+                  - etc. for higher-order n-grams
+                  - if there is no word available at a position (e.g., blank at start/end of text), None is appended to maintain consistent list lengths.
+        """
         context = {}
 
         # For n-grams up to max_ngram_order, we need (max_ngram_order-1) words before/after
@@ -63,6 +75,8 @@ class ClozeSolver:
                 if idx >= 0:
                     context[f'before{i}'].append(words_before_text[idx].lower())
                 else:
+                    # No word available at this position (e.g., blank at start of sentence)
+                    # These None values are filtered out during n-gram counting.
                     context[f'before{i}'].append(None)
 
             # Get words after blank
@@ -71,6 +85,8 @@ class ClozeSolver:
                 if i < len(words_after_text):
                     context[f'after{i}'].append(words_after_text[i].lower())
                 else:
+                    # No word available at this position (e.g., blank at end of sentence)
+                    # These None values are filtered out during n-gram counting.
                     context[f'after{i}'].append(None)
 
         return context
@@ -146,6 +162,7 @@ class ClozeSolver:
         # Build sets for fast lookup
         context_sets = {}
         for key, word_list in self.context_words.items():
+            # Filter out None values which indicate missing context words
             context_sets[key] = set([w for w in word_list if w is not None])
         candidates_words_set = set([w.lower() for w in self.candidates_words])
 
