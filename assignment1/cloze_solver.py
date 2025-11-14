@@ -285,7 +285,10 @@ class ClozeSolver:
 
         return combined_score
 
-    def _score_candidate_ngram(self, candidate: str, left_context: List[str], right_context: List[str],
+    def _score_candidate_ngram(self,
+                               candidate: str,
+                               left_context: List[str],
+                               right_context: List[str],
                                n: int) -> float:
         """Score a candidate word using n-gram model of order n."""
         candidate_lower = candidate.lower()
