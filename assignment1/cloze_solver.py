@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Set, Dict
 import re
 import os
 import pickle
@@ -31,7 +31,7 @@ class ClozeSolver:
         with open(self.candidates_filename, 'r', encoding='utf-8') as candidates_file:
             return candidates_file.read().splitlines()
 
-    def _get_target_words(self):
+    def _get_target_words(self) -> Dict[str, List[str]]:
         """
         Extract context words around each blank. Returns dict with lists for each position.
         
@@ -159,12 +159,13 @@ class ClozeSolver:
                 print(f"loaded {n}grams pkl ...")
 
     def _init_ngram_counts(self) -> None:
+        """Initialize n-gram counts from corpus, only counting relevant n-grams."""
         # Build sets for fast lookup
-        context_sets = {}
+        self.context_sets: Dict[str, Set[str]] = {}
         for key, word_list in self.context_words.items():
             # Filter out None values which indicate missing context words
-            context_sets[key] = set([w for w in word_list if w is not None])
-        candidates_words_set = set([w.lower() for w in self.candidates_words])
+            self.context_sets[key] = set([w for w in word_list if w is not None])
+        self.candidates_words_set = set([w.lower() for w in self.candidates_words])
 
         with open(self.corpus_filename, 'r', encoding='utf-8') as fin:
             print(f'creating n-grams (up to {self.max_ngram_order}) from corpus ...')
@@ -175,36 +176,7 @@ class ClozeSolver:
 
                 # Count n-grams for each order
                 for n in range(2, self.max_ngram_order + 1):
-                    if len(words) < n:
-                        continue
-
-                    # Count n-grams once using Counter
-                    ngram_counts = Counter(zip(*[words[j:] for j in range(n)]))
-
-                    # Loop only over n-grams that actually appear
-                    for ngram_tuple, count in ngram_counts.items():
-                        # Pattern 1: context_before → ... → candidate
-                        # Check if first (n-1) words match context_before patterns and last word is candidate
-                        matches_pattern1 = True
-                        for j in range(n - 1):
-                            context_key = f'before{j}'
-                            if ngram_tuple[j] not in context_sets.get(context_key, set()):
-                                matches_pattern1 = False
-                                break
-                        if matches_pattern1 and ngram_tuple[-1] in candidates_words_set:
-                            self.ngrams[n][ngram_tuple] += count
-
-                        # Pattern 2: candidate → context_after → ... (only if not left_only)
-                        elif not self.left_only:
-                            matches_pattern2 = ngram_tuple[0] in candidates_words_set
-                            if matches_pattern2:
-                                for j in range(1, n):
-                                    context_key = f'after{j - 1}'
-                                    if ngram_tuple[j] not in context_sets.get(context_key, set()):
-                                        matches_pattern2 = False
-                                        break
-                                if matches_pattern2:
-                                    self.ngrams[n][ngram_tuple] += count
+                    self._update_ngrams(words, n)
 
                 if i % 100000 == 0:
                     print(f"Finished {i} lines...")
@@ -215,6 +187,70 @@ class ClozeSolver:
         punctuation_re = re.compile(r'[^\w\s-]')
         clean_text = punctuation_re.sub('', text).lower()
         return clean_text.split()
+
+    def _update_ngrams(self, words: List[str], n: int) -> None:
+        """
+        Process and count n-grams of order n for a line of text.
+        Only counts n-grams that match the relevant patterns (before→candidate or candidate→after).
+
+        Args:
+            words: Tokenized words from a line
+            n: The order of n-grams to process
+        """
+        if len(words) < n:
+            return
+
+        # Count n-grams once using Counter
+        ngram_counts = Counter(zip(*[words[j:] for j in range(n)]))
+
+        # Loop only over n-grams that actually appear
+        for ngram_tuple, count in ngram_counts.items():
+            # Pattern 1: context_before → ... → candidate
+            if self._matches_before_pattern(ngram_tuple, n):
+                self.ngrams[n][ngram_tuple] += count
+
+            # Pattern 2: candidate → context_after → ... (only if not left_only)
+            elif not self.left_only and self._matches_after_pattern(ngram_tuple, n):
+                self.ngrams[n][ngram_tuple] += count
+
+    def _matches_before_pattern(self, ngram_tuple: tuple, n: int) -> bool:
+        """
+        Check if an n-gram matches pattern 1: context_before → ... → candidate.
+
+        Args:
+            ngram_tuple: The n-gram tuple to check
+            n: The order of the n-gram
+
+        Returns:
+            bool: True if the n-gram matches the before pattern
+        """
+        # Check if first (n-1) words match context_before patterns and last word is candidate
+        for j in range(n - 1):
+            context_key = f'before{j}'
+            if ngram_tuple[j] not in self.context_sets.get(context_key, set()):
+                return False
+        return ngram_tuple[-1] in self.candidates_words_set
+
+    def _matches_after_pattern(self, ngram_tuple: tuple, n: int) -> bool:
+        """
+        Check if an n-gram matches pattern 2: candidate → context_after → ...
+
+        Args:
+            ngram_tuple: The n-gram tuple to check
+            n: The order of the n-gram
+
+        Returns:
+            bool: True if the n-gram matches the after pattern
+        """
+        # Check if first word is candidate and remaining words match context_after patterns
+        if ngram_tuple[0] not in self.candidates_words_set:
+            return False
+
+        for j in range(1, n):
+            context_key = f'after{j - 1}'
+            if ngram_tuple[j] not in self.context_sets.get(context_key, set()):
+                return False
+        return True
 
     def _get_context(self, text: str, blank_pos: int) -> Tuple[List[str], List[str]]:
         """Extract left and right context around a blank position."""
