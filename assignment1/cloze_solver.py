@@ -298,6 +298,6 @@ class ClozeSolver:
         return sum(accuracies) / len(accuracies)
 
     def calculate_solution_accuracy(self, solution: List[str]):
-        correct_order = self._get_candidates_words()
+        correct_order = self.candidates_words # The correct order is the order in candidates file
         matches = sum(1 for prediction, correct in zip(solution, correct_order) if prediction == correct)
         return (matches / len(correct_order)) * 100
