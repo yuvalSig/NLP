@@ -4,6 +4,7 @@ import os
 import pickle
 from collections import defaultdict
 from collections import Counter
+import random
 
 class ClozeSolver:
     def __init__(self,
@@ -260,6 +261,9 @@ class ClozeSolver:
             print(f'Blank at position {blank_pos}: selected "{best_candidate}" (score: {best_score:.6f})')
 
         return solution
+
+    def solve_cloze_randomly(self) -> List[str]:
+        return random.sample(self.candidates_words, len(self.candidates_words))
 
     def calculate_solution_accuracy(self, solution: List[str]):
         correct_order = self._get_candidates_words()
