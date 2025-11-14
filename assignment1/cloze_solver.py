@@ -237,7 +237,7 @@ class ClozeSolver:
         for match in blank_pattern.finditer(text):
             blanks.append(match.start())
 
-        solutions = []
+        solution = []
 
         for blank_pos in blanks:
             left_context, right_context = self._get_context(text, blank_pos)
@@ -256,7 +256,12 @@ class ClozeSolver:
             if best_candidate is None:
                 best_candidate = self.candidates_words[0] if self.candidates_words else ""
 
-            solutions.append(best_candidate)
+            solution.append(best_candidate)
             print(f'Blank at position {blank_pos}: selected "{best_candidate}" (score: {best_score:.6f})')
 
-        return solutions
+        return solution
+
+    def calculate_solution_accuracy(self, solution: List[str]):
+        correct_order = self._get_candidates_words()
+        matches = sum(1 for prediction, correct in zip(solution, correct_order) if prediction == correct)
+        return (matches / len(correct_order)) * 100

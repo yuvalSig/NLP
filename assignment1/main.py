@@ -8,8 +8,10 @@ def solve_cloze(input, candidates, corpus, left_only):
                          candidates_filename=candidates,
                          corpus_filename=corpus,
                          left_only=left_only)
-    solutions =  solver.solve_cloze()
-    return solutions
+    solution =  solver.solve_cloze()
+    accuracy = solver.calculate_solution_accuracy(solution)
+    print(f'cloze solved with accuracy: {accuracy:.2f}%')
+    return solution
 
 
 if __name__ == '__main__':
