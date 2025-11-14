@@ -101,38 +101,142 @@ class ClozeSolver:
         with open(self.input_filename, 'r', encoding='utf-8') as input_file:
             text = input_file.read()
 
-        # Find all blank positions
-        blank_pattern = re.compile(r'_{10,}')
-        blanks = []
-        for match in blank_pattern.finditer(text):
-            blanks.append(match.start())
-
+        blank_positions = self._find_blank_positions(text)
         solution = []
 
-        for blank_pos in blanks:
-            left_context, right_context = self._get_context(text, blank_pos)
-
-            best_candidate = None
-            best_score = float('-inf')
-
-            # Score each candidate
-            for candidate in self.candidates_words:
-                score = self._score_candidate(candidate, left_context, right_context)
-                if score > best_score:
-                    best_score = score
-                    best_candidate = candidate
-
-            # If no good match found, use first candidate as fallback
-            if best_candidate is None:
-                best_candidate = self.candidates_words[0] if self.candidates_words else ""
-
+        for blank_pos in blank_positions:
+            best_candidate, best_score = self._find_best_candidate_for_blank(text, blank_pos)
             solution.append(best_candidate)
             print(f'Blank at position {blank_pos}: selected "{best_candidate}" (score: {best_score:.6f})')
 
         return solution
 
-    def solve_cloze_randomly(self) -> List[str]:
-        return random.choices(self.candidates_words, k=len(self.candidates_words))
+    def _find_blank_positions(self, text: str) -> List[int]:
+        """
+        Find all blank positions in the text.
+
+        Args:
+            text: The input text containing blanks
+
+        Returns:
+            List of blank start positions
+        """
+        blank_pattern = re.compile(r'_{10,}')
+        blanks = []
+        for match in blank_pattern.finditer(text):
+            blanks.append(match.start())
+        return blanks
+
+    def _find_best_candidate_for_blank(self, text: str, blank_pos: int) -> Tuple[str, float]:
+        """
+        Find the best candidate word for a single blank position.
+
+        Args:
+            text: The input text containing blanks
+            blank_pos: The start position of the blank
+
+        Returns:
+            Tuple of (best_candidate_word, best_score)
+        """
+        left_context, right_context = self._get_context(text, blank_pos)
+
+        best_candidate = None
+        best_score = float('-inf')
+
+        # Score each candidate
+        for candidate in self.candidates_words:
+            score = self._score_candidate(candidate, left_context, right_context)
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+
+        # If no good match found, use first candidate as fallback
+        if best_candidate is None:
+            best_candidate = self.candidates_words[0] if self.candidates_words else ""
+
+        return best_candidate, best_score
+
+    def _get_context(self, text: str, blank_pos: int) -> Tuple[List[str], List[str]]:
+        """Extract left and right context around a blank position."""
+        text_before_blank = text[:blank_pos]
+        words_before = self._tokenize(text_before_blank)
+
+        # Get left context (up to max_ngram_order-1 words)
+        left_context = words_before[-(self.max_ngram_order - 1):] if len(words_before) >= (
+                    self.max_ngram_order - 1) else words_before
+
+        # Get right context if not left_only
+        right_context = []
+        if not self.left_only:
+            text_after_blank = text[blank_pos:]
+            text_after_blank = text_after_blank.replace('__________', '', 1)
+            words_after = self._tokenize(text_after_blank)
+            right_context = words_after[:self.max_ngram_order - 1] if len(words_after) >= (
+                        self.max_ngram_order - 1) else words_after
+
+        return left_context, right_context
+
+    def _score_candidate(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
+        """Score a candidate using all n-gram models, with higher weights for higher-order n-grams."""
+        combined_score = 0.0
+
+        # Score with each n-gram order, with increasing weights
+        for n in range(2, self.max_ngram_order + 1):
+            ngram_score = self._score_candidate_ngram(candidate, left_context, right_context, n)
+            # Higher-order n-grams get exponentially higher weights
+            weight = (n - 1) ** 2  # 1, 4, 9, 16 for bigrams, trigrams, 4-grams, 5-grams
+            combined_score += weight * ngram_score
+
+        return combined_score
+
+    def _score_candidate_ngram(self,
+                               candidate: str,
+                               left_context: List[str],
+                               right_context: List[str],
+                               n: int) -> float:
+        """Score a candidate word using n-gram model of order n."""
+        candidate_lower = candidate.lower()
+        score = 0.0
+
+        # Left n-gram: (context_words..., candidate)
+        if len(left_context) >= n - 1:
+            ngram_tuple = tuple(left_context[-(n - 1):] + [candidate_lower])
+            ngram_count = self.ngrams[n][ngram_tuple]
+
+            # Get (n-1)-gram count for normalization
+            if n > 2:
+                prev_ngram = tuple(left_context[-(n - 1):])
+                prev_count = self.ngrams[n - 1][prev_ngram]
+            else:
+                # For bigrams, use unigram count
+                prev_count = self.unigrams[left_context[-1]] if left_context else 0
+
+            if prev_count > 0:
+                score += ngram_count / prev_count
+        # Fallback to lower-order n-gram
+        elif len(left_context) >= 1 and n > 2:
+            return self._score_candidate_ngram(candidate, left_context, right_context, n - 1)
+
+        # Right n-gram: (candidate, context_words...) - only if not left_only
+        if not self.left_only and len(right_context) >= n - 1:
+            ngram_tuple = tuple([candidate_lower] + right_context[:n - 1])
+            ngram_count = self.ngrams[n][ngram_tuple]
+
+            # Get (n-1)-gram count for normalization
+            if n > 2:
+                prev_ngram = tuple([candidate_lower] + right_context[:n - 2])
+                prev_count = self.ngrams[n - 1][prev_ngram]
+            else:
+                # For bigrams, use unigram count
+                prev_count = self.unigrams[candidate_lower]
+
+            if prev_count > 0:
+                score += ngram_count / prev_count
+        # Fallback to lower-order n-gram
+        elif not self.left_only and len(right_context) >= 1 and n > 2:
+            score += self._score_candidate_ngram(candidate, left_context, right_context, n - 1)
+
+        return score
 
     def _load_ngram_counts(self):
         pickle_files = {n: f'{n}grams.pkl' for n in range(2, self.max_ngram_order + 1)}
@@ -158,6 +262,7 @@ class ClozeSolver:
                 self.ngrams[n] = pickle.load(open(f'{n}grams.pkl', 'rb'))
                 print(f"loaded {n}grams pkl ...")
 
+    # TODO: make the _init_ngram_counts function async to speed up the training process
     def _init_ngram_counts(self) -> None:
         """Initialize n-gram counts from corpus, only counting relevant n-grams."""
         # Build sets for fast lookup
@@ -252,88 +357,6 @@ class ClozeSolver:
                 return False
         return True
 
-    def _get_context(self, text: str, blank_pos: int) -> Tuple[List[str], List[str]]:
-        """Extract left and right context around a blank position."""
-        text_before_blank = text[:blank_pos]
-        words_before = self._tokenize(text_before_blank)
-
-        # Get left context (up to max_ngram_order-1 words)
-        left_context = words_before[-(self.max_ngram_order - 1):] if len(words_before) >= (
-                    self.max_ngram_order - 1) else words_before
-
-        # Get right context if not left_only
-        right_context = []
-        if not self.left_only:
-            text_after_blank = text[blank_pos:]
-            text_after_blank = text_after_blank.replace('__________', '', 1)
-            words_after = self._tokenize(text_after_blank)
-            right_context = words_after[:self.max_ngram_order - 1] if len(words_after) >= (
-                        self.max_ngram_order - 1) else words_after
-
-        return left_context, right_context
-
-    def _score_candidate(self, candidate: str, left_context: List[str], right_context: List[str]) -> float:
-        """Score a candidate using all n-gram models, with higher weights for higher-order n-grams."""
-        combined_score = 0.0
-
-        # Score with each n-gram order, with increasing weights
-        for n in range(2, self.max_ngram_order + 1):
-            ngram_score = self._score_candidate_ngram(candidate, left_context, right_context, n)
-            # Higher-order n-grams get exponentially higher weights
-            weight = (n - 1) ** 2  # 1, 4, 9, 16 for bigrams, trigrams, 4-grams, 5-grams
-            combined_score += weight * ngram_score
-
-        return combined_score
-
-    def _score_candidate_ngram(self,
-                               candidate: str,
-                               left_context: List[str],
-                               right_context: List[str],
-                               n: int) -> float:
-        """Score a candidate word using n-gram model of order n."""
-        candidate_lower = candidate.lower()
-        score = 0.0
-
-        # Left n-gram: (context_words..., candidate)
-        if len(left_context) >= n - 1:
-            ngram_tuple = tuple(left_context[-(n - 1):] + [candidate_lower])
-            ngram_count = self.ngrams[n][ngram_tuple]
-
-            # Get (n-1)-gram count for normalization
-            if n > 2:
-                prev_ngram = tuple(left_context[-(n - 1):])
-                prev_count = self.ngrams[n - 1][prev_ngram]
-            else:
-                # For bigrams, use unigram count
-                prev_count = self.unigrams[left_context[-1]] if left_context else 0
-
-            if prev_count > 0:
-                score += ngram_count / prev_count
-        # Fallback to lower-order n-gram
-        elif len(left_context) >= 1 and n > 2:
-            return self._score_candidate_ngram(candidate, left_context, right_context, n - 1)
-
-        # Right n-gram: (candidate, context_words...) - only if not left_only
-        if not self.left_only and len(right_context) >= n - 1:
-            ngram_tuple = tuple([candidate_lower] + right_context[:n - 1])
-            ngram_count = self.ngrams[n][ngram_tuple]
-
-            # Get (n-1)-gram count for normalization
-            if n > 2:
-                prev_ngram = tuple([candidate_lower] + right_context[:n - 2])
-                prev_count = self.ngrams[n - 1][prev_ngram]
-            else:
-                # For bigrams, use unigram count
-                prev_count = self.unigrams[candidate_lower]
-
-            if prev_count > 0:
-                score += ngram_count / prev_count
-        # Fallback to lower-order n-gram
-        elif not self.left_only and len(right_context) >= 1 and n > 2:
-            score += self._score_candidate_ngram(candidate, left_context, right_context, n - 1)
-
-        return score
-
     def get_random_word_selection_accuracy(self, num_of_random_solutions: int = 1000) -> float:
         """
         Generates random cloze solutions and returns the mean accuracy.
@@ -352,6 +375,9 @@ class ClozeSolver:
             accuracies.append(accuracy)
 
         return sum(accuracies) / len(accuracies)
+
+    def solve_cloze_randomly(self) -> List[str]:
+        return random.choices(self.candidates_words, k=len(self.candidates_words))
 
     def calculate_solution_accuracy(self, solution: List[str]):
         correct_order = self.candidates_words # The correct order is the order in candidates file
