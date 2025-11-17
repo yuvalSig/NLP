@@ -8,7 +8,14 @@ The file **plot_heaps_zipf_laws.py** includes the original implementation for pl
 Running it produces a log-log graph of word frequency vs. rank for the Wikipedia 2018 dataset fragment.
 
 ### ✔️ Heaps’ Law (implemented by me)
-I added a new function:
+I added a new function.
+
+The result: 
+
+<img width="865" height="649" alt="image" src="https://github.com/user-attachments/assets/9ac55d47-6cb2-4409-ac9c-7983b07477eb" />
+<img width="865" height="649" alt="image" src="https://github.com/user-attachments/assets/f7ab3819-18b6-40de-859d-2167aede866d" />
+
+
 
 
 # ▶️ How to Run
